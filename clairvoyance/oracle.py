@@ -90,7 +90,7 @@ _GENERAL_SKIP = [
     r"""String cannot represent a non string value: .+""",
     r"""Float cannot represent a non numeric value: .+""",
     r"""ID cannot represent a non-string and non-integer value: .+""",
-    r"""Enum ['"]""" + MAIN_REGEX + r"""['"] cannot represent non-enum value: .+"""
+    r"""Enum ['"]""" + MAIN_REGEX + r"""['"] cannot represent non-enum value: .+""",
     r"""Int cannot represent non-integer value: .+""",
     r"""Not authorized""",
 ]

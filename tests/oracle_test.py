@@ -331,5 +331,16 @@ class TestProbeTypename(aiounittest.AsyncTestCase):
         self.assertEqual(typename, "Mutation")
 
 
+class TestGeneralSkip(unittest.TestCase):
+    def test_enum_and_int_messages_are_skipped(self) -> None:
+        for message in [
+            'Enum "Color" cannot represent non-enum value: 7.',
+            "Int cannot represent non-integer value: 7.5",
+        ]:
+            self.assertTrue(
+                any(r.fullmatch(message) for r in oracle.GENERAL_SKIP), message
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
