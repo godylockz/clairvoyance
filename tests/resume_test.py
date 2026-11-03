@@ -100,6 +100,42 @@ class TestResume(aiounittest.AsyncTestCase):
 
         self.assertEqual(fake.requests, [])
 
+    async def test_resume_probes_with_discovered_names(self) -> None:
+        fake = await self.run_resume(build_schema(["shippingAddress"]), ["foo"])
+
+        words = set(" ".join(fake.requests).replace("{", " ").replace("}", " ").split())
+        self.assertTrue(
+            {"shippingAddress", "shipping", "address", "foo"} <= words, words
+        )
+
+
+class TestDiscoveredWords(unittest.TestCase):
+    def test_names_types_and_parts(self) -> None:
+        schema = build_schema(["order_items"])
+        schema.add_type("GiftCard", "OBJECT")
+        schema.add_type("V2_Asset", "OBJECT")
+        schema.types["Query"].fields[0].args.append(
+            graphql.InputValue("pageSize", graphql.TypeRef("Int", "SCALAR"))
+        )
+
+        words = cli.discovered_words(schema)
+
+        for want in [
+            "cart",
+            "pageSize",
+            "page",
+            "size",
+            "order_items",
+            "order",
+            "items",
+            "giftCard",
+            "gift",
+            "card",
+        ]:
+            self.assertIn(want, words)
+        self.assertNotIn("v2_Asset", words)
+        self.assertNotIn("string", words)
+
 
 class TestNextDocument(unittest.TestCase):
     def setUp(self) -> None:

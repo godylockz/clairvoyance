@@ -39,6 +39,8 @@ There are at least three approaches:
 - Use general English words (e.g. [google-10000-english](https://github.com/first20hours/google-10000-english)).
 - Create target specific wordlist by extracting all valid GraphQL names from application HTTP traffic, from mobile application static files, etc. Regex for GraphQL name is [`[_A-Za-z][_0-9A-Za-z]*`](http://spec.graphql.org/June2018/#sec-Names).
 
+Whichever you pick, Clairvoyance adds the names it discovers (fields, arguments, type names in field form and the words inside camelCase names) to the wordlist as it goes, so later types are probed with the target's own vocabulary.
+
 ### Environment variables
 
 ```bash

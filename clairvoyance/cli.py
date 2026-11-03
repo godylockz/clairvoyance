@@ -46,6 +46,42 @@ def load_default_wordlist() -> List[str]:
         return [w.strip() for w in f.readlines() if w.strip()]
 
 
+# Words inside camelCase, PascalCase and snake_case names.
+NAME_PART_REGEX = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
+TYPE_NAME_REGEX = re.compile(r"[A-Z][A-Za-z0-9]*")
+
+
+def discovered_words(schema: graphql.Schema) -> List[str]:
+    """Names found so far, to probe other types with.
+
+    Includes field and argument names, type names in field form (OrderItems -> orderItems), and the lowercased parts of all of these.
+    """
+
+    names: List[str] = []
+    for t in schema.types.values():
+        if TYPE_NAME_REGEX.fullmatch(t.name) and t.name not in GraphQLPrimitive:
+            names.append(t.name[0].lower() + t.name[1:])
+        for f in t.fields:
+            names.append(f.name)
+            names.extend(a.name for a in f.args)
+
+    words: List[str] = []
+    for name in names:
+        words.append(name)
+        words.extend(p.lower() for p in NAME_PART_REGEX.findall(name) if len(p) >= 3)
+    return words
+
+
+def extend_wordlist(wordlist: List[str], schema: graphql.Schema) -> None:
+    """Append discovered names that are not in the wordlist yet."""
+
+    known = set(wordlist)
+    new = [w for w in dict.fromkeys(discovered_words(schema)) if w not in known]
+    if new:
+        wordlist.extend(new)
+        log().info(f"Added {len(new)} names found in the schema to the wordlist")
+
+
 def next_document(schema: graphql.Schema, ignored: Set[str]) -> str:
     """Return the document that probes the next type without fields, or "" when none is left.
 
@@ -103,6 +139,8 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
         schema = json.dumps(input_schema, indent=4, sort_keys=True)
 
     ignored = set(e.value for e in GraphQLPrimitive)
+    if input_schema:
+        extend_wordlist(wordlist, graphql.Schema(schema=input_schema))
     if not input_document:
         if input_schema:
             # Resume: types that already have fields are done.
@@ -126,7 +164,9 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
                 f.write(schema)
 
         input_schema = json.loads(schema)
-        input_document = next_document(graphql.Schema(schema=input_schema), ignored)
+        s = graphql.Schema(schema=input_schema)
+        extend_wordlist(wordlist, s)
+        input_document = next_document(s, ignored)
 
     logger.info("Blind introspection complete.")
     await client().close()
