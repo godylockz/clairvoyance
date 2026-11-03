@@ -110,6 +110,34 @@ ERROR_LIMIT_REGEX = re.compile(r"Too many validation errors", re.IGNORECASE)
 _error_limit_warned = False  # pylint: disable=invalid-name
 
 
+# graphql-js names the exact expected type of an argument given a variable of the wrong type.
+VARIABLE_POSITION_REGEX = re.compile(
+    r"""Variable ['"]\$v(?P<index>[0-9]+)['"] of type ['"]Boolean['"] used in position expecting type ['"](?P<typeref>[^'"]+)['"]\."""
+)
+REQUIRED_ARG_REGEX = re.compile(
+    r"""Field ['"](?P<field>[_A-Za-z][_0-9A-Za-z]*)['"] argument ['"](?P<arg>[_A-Za-z][_0-9A-Za-z]*)['"] of type ['"](?P<typeref>[^'"]+)['"] is """
+    + REQUIRED_BUT_NOT_PROVIDED
+)
+ROOT_DOCUMENT_REGEX = re.compile(
+    r"\s*(query|mutation|subscription)?\s*\{\s*FUZZ\s*\}\s*"
+)
+
+
+def to_typeref(
+    signature: str, kind: str, name: Optional[str] = None
+) -> graphql.TypeRef:
+    """Build a TypeRef from a type signature such as [CartItemInput!]!."""
+
+    is_list = "[" in signature and "]" in signature
+    return graphql.TypeRef(
+        name=name or signature.replace("!", "").replace("[", "").replace("]", ""),
+        kind=kind,
+        is_list=is_list,
+        non_null_item=is_list and "!]" in signature,
+        non_null=signature.endswith("!"),
+    )
+
+
 def has_no_subfields(error_message: str) -> bool:
     """Check whether the error says the probed type is a scalar or enum."""
 
@@ -271,7 +299,8 @@ async def probe_valid_fields(
         result = await task
         valid_fields.update(result or set())
 
-    return valid_fields
+    # Meta fields such as __typename are valid everywhere and are not part of the schema.
+    return {f for f in valid_fields if not f.startswith("__")}
 
 
 async def probe_valid_args(
@@ -310,6 +339,13 @@ async def probe_valid_args(
 
         if has_no_subfields(error_message):
             return set()
+
+        # A required argument missing from the bucket is named even if it is not in the wordlist.
+        required = REQUIRED_ARG_REGEX.fullmatch(error_message)
+        if required:
+            if required.group("field") == field:
+                valid_args.add(required.group("arg"))
+            continue
 
         # First remove arg if it produced an 'Unknown argument' error
         match = re.search(
@@ -454,17 +490,7 @@ def get_typeref(
             log().debug(f"Unknown kind for `typeref`: '{error_message}'")
             return None
 
-        is_list = bool("[" in tk and "]" in tk)
-        non_null_item = bool(is_list and "!]" in tk)
-        non_null = tk.endswith("!")
-
-        return graphql.TypeRef(
-            name=name,
-            kind=kind,
-            is_list=is_list,
-            non_null_item=non_null_item,
-            non_null=non_null,
-        )
+        return to_typeref(tk, kind, name)
 
     return None
 
@@ -472,8 +498,12 @@ def get_typeref(
 async def probe_typeref(
     documents: List[str],
     context: FuzzingContext,
+    arg: Optional[str] = None,
 ) -> Optional[graphql.TypeRef]:
-    """Sending a document to attain errors in order to deduce the type of fields."""
+    """Sending a document to attain errors in order to deduce the type of fields.
+
+    When probing an argument, a "required" error about a different argument says nothing about this one's type.
+    """
 
     async def __probation(document: str) -> Optional[graphql.TypeRef]:
         """Send a document to attempt discovering a typeref."""
@@ -483,6 +513,11 @@ async def probe_typeref(
             if isinstance(error, str):
                 continue
 
+            required = REQUIRED_ARG_REGEX.fullmatch(str(error["message"]))
+            if arg and required and required.group("arg") != arg:
+                continue
+
+            typeref = None
             if not isinstance(error["message"], dict):
                 typeref = get_typeref(
                     error["message"],
@@ -541,7 +576,60 @@ async def probe_arg_typeref(
         input_document.replace("FUZZ", f"{field}({arg}: false)"),
     ]
 
-    return await probe_typeref(documents, FuzzingContext.ARGUMENT)
+    return await probe_typeref(documents, FuzzingContext.ARGUMENT, arg)
+
+
+async def probe_arg_types(
+    field: str,
+    args: List[str],
+    input_document: str,
+) -> Dict[str, graphql.TypeRef]:
+    """Type all arguments of a field in one request by passing each a Boolean variable.
+
+    graphql-js reports the exact type, list and non-null markers included, for every variable in the wrong position. Once the server is seen to
+    report this, an argument without such an error accepts Boolean. Arguments left out of the result need the per-argument probe.
+    """
+
+    if not args:
+        return {}
+
+    variables = ", ".join(f"$v{i}: Boolean" for i in range(len(args)))
+    call = f"{field}({', '.join(f'{a}: $v{i}' for i, a in enumerate(args))})"
+    document = input_document.replace("FUZZ", call)
+    document, count = re.subn(
+        r"^\s*(query|mutation|subscription)\b", rf"\1({variables})", document, count=1
+    )
+    if not count:
+        document = f"query({variables}) {document}"
+
+    response = await client().post(document=document)
+    if not response:
+        return {}
+
+    errors = response.get("errors", [])
+    if hit_error_limit(errors, len(args)):
+        half = len(args) // 2
+        first, second = await asyncio.gather(
+            probe_arg_types(field, args[:half], input_document),
+            probe_arg_types(field, args[half:], input_document),
+        )
+        return {**first, **second}
+
+    types: Dict[str, graphql.TypeRef] = {}
+    for error in errors:
+        match = VARIABLE_POSITION_REGEX.fullmatch(error.get("message", ""))
+        if match and int(match.group("index")) < len(args):
+            signature = match.group("typeref")
+            name = signature.replace("!", "").replace("[", "").replace("]", "")
+            # Enums and custom scalars also land here; the error does not tell them apart from input objects.
+            kind = "SCALAR" if name in GraphQLPrimitive else "INPUT_OBJECT"
+            types[args[int(match.group("index"))]] = to_typeref(signature, kind)
+
+    if types:
+        for arg in args:
+            types.setdefault(arg, graphql.TypeRef(GraphQLPrimitive.BOOLEAN, "SCALAR"))
+
+    return types
 
 
 async def probe_typename(input_document: str) -> str:
@@ -607,8 +695,12 @@ async def explore_field(
     input_document: str,
     wordlist: List[str],
     typename: str,
+    probe_scalar_args: bool = False,
 ) -> Tuple[graphql.Field, List[graphql.InputValue]]:
-    """Perform exploration on a field."""
+    """Perform exploration on a field.
+
+    Arguments of fields that return a primitive are only probed with probe_scalar_args, which root fields use: mutations often return Boolean.
+    """
 
     typeref = await probe_field_type(
         field_name,
@@ -617,7 +709,7 @@ async def explore_field(
 
     args = []
     field = graphql.Field(field_name, typeref)
-    if field.type.name in GraphQLPrimitive:
+    if field.type.name in GraphQLPrimitive and not probe_scalar_args:
         log().debug(f'Skip probe_args() for "{field.name}" of type "{field.type.name}"')
     else:
         arg_names = await probe_args(
@@ -627,8 +719,11 @@ async def explore_field(
         )
 
         log().debug(f"{typename}.{field_name}.args = {arg_names}")
+        arg_types = await probe_arg_types(field.name, sorted(arg_names), input_document)
         for arg_name in arg_names:
-            arg_typeref = await probe_arg_typeref(field.name, arg_name, input_document)
+            arg_typeref = arg_types.get(arg_name) or await probe_arg_typeref(
+                field.name, arg_name, input_document
+            )
 
             if not arg_typeref:
                 log().debug(
@@ -680,6 +775,9 @@ async def clairvoyance(
                     input_document,
                     wordlist,
                     typename,
+                    probe_scalar_args=bool(
+                        ROOT_DOCUMENT_REGEX.fullmatch(input_document)
+                    ),
                 )
             )
         )

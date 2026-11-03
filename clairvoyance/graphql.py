@@ -427,8 +427,8 @@ class Type:
                 fields_field = "inputFields"
 
             for f in _json[fields_field]:
-                # Don't add dummy fields!
-                if f["name"] == "dummy":
+                # Don't add dummy fields, or meta fields that older versions recorded.
+                if f["name"] == "dummy" or f["name"].startswith("__"):
                     continue
                 fields.append(Field.from_json(f))
 
