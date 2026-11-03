@@ -4,13 +4,13 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from clairvoyance import graphql, oracle
 from clairvoyance.client import Client
 from clairvoyance.config import Config
 from clairvoyance.entities import GraphQLPrimitive
-from clairvoyance.entities.context import client, logger_ctx
+from clairvoyance.entities.context import client, log, logger_ctx
 from clairvoyance.utils import parse_args, setup_logger
 
 
@@ -46,6 +46,23 @@ def load_default_wordlist() -> List[str]:
         return [w.strip() for w in f.readlines() if w.strip()]
 
 
+def next_document(schema: graphql.Schema, ignored: Set[str]) -> str:
+    """Return the document that probes the next type without fields, or "" when none is left.
+
+    Every returned type is added to ignored so one run probes it once.
+    """
+
+    while True:
+        _next = schema.get_type_without_fields(ignored)
+        if not _next:
+            return ""
+        ignored.add(_next)
+        try:
+            return schema.convert_path_to_document(schema.get_path_from_root(_next))
+        except ValueError as e:
+            log().warning(f"Skipping type {_next}: {e}")
+
+
 async def blind_introspection(  # pylint: disable=too-many-arguments
     url: str,
     logger: logging.Logger,
@@ -79,14 +96,23 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
     logger.info(f"Starting blind introspection on {url}...")
 
     input_schema = None
+    schema = ""
     if input_schema_path:
         with open(input_schema_path, "r", encoding="utf-8") as f:
             input_schema = json.load(f)
+        schema = json.dumps(input_schema, indent=4, sort_keys=True)
 
-    input_document = input_document or "query { FUZZ }"
     ignored = set(e.value for e in GraphQLPrimitive)
+    if not input_document:
+        if input_schema:
+            # Resume: types that already have fields are done.
+            input_document = next_document(graphql.Schema(schema=input_schema), ignored)
+            logger.info(f"Resuming with {input_document or 'nothing left to probe'}")
+        else:
+            input_document = "query { FUZZ }"
+
     iterations = 1
-    while True:
+    while input_document:
         logger.info(f"Iteration {iterations}")
         iterations += 1
         schema = await oracle.clairvoyance(
@@ -100,15 +126,7 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
                 f.write(schema)
 
         input_schema = json.loads(schema)
-        s = graphql.Schema(schema=input_schema)
-
-        _next = s.get_type_without_fields(ignored)
-        ignored.add(_next)
-
-        if _next:
-            input_document = s.convert_path_to_document(s.get_path_from_root(_next))
-        else:
-            break
+        input_document = next_document(graphql.Schema(schema=input_schema), ignored)
 
     logger.info("Blind introspection complete.")
     await client().close()

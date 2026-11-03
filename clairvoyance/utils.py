@@ -39,8 +39,6 @@ def set_slow_config(args: argparse.Namespace) -> None:
 
 
 def parse_args(args: List[str]) -> argparse.Namespace:
-    default_values = {"document": "query { FUZZ }"}
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-v",
@@ -52,7 +50,8 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         "-i",
         "--input-schema",
         metavar="<file>",
-        help="Input file containing JSON schema which will be supplemented with obtained information",
+        help="Input file containing JSON schema which will be supplemented with obtained information. "
+        "Without -d, probing resumes at the first type that has no fields yet.",
     )
     parser.add_argument(
         "-o",
@@ -64,8 +63,7 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         "-d",
         "--document",
         metavar="<string>",
-        default=default_values["document"],
-        help=f'Start with this document (default {default_values["document"]})',
+        help="Start with this document (default query { FUZZ }, or the first type without fields when resuming with -i)",
     )
     parser.add_argument(
         "-H",

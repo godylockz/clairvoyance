@@ -16,5 +16,6 @@ At first, determine the case: whether the Clairvoyance doesn't work at all, with
 
 ## The Clairvoyance worked, but stopped working
  - Does the program work when you restart it? If the answer is yes, check "Rate Limits", if not, then check "Server-related issue"
+ - Resuming: the `-o` file is rewritten after every type. Rerun with `-i schema.json -o schema.json` (and no `-d`) to continue from the first type that has no fields yet.
  - Rate Limits: server might rate limit requests from the same IP/user. Lower amount of threads (`-c`), add a backoff (`-b`) or try to run the program in a slow mode. HTTP 429 responses are retried after the server's `Retry-After` delay, or after 5 seconds when the server sends none. A request that still fails after `-m` retries is logged as an error and its words are missing from the schema, so rerun if you see one.
  - Server-related issue: server might be temporary unavailable, check the endpoint manually using browser or other previously used tools. Alternatively, your IP/user might have been banned.

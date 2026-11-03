@@ -678,7 +678,10 @@ async def clairvoyance(
         field, args = await task
         for arg in args:
             schema.add_type(arg.type.name, "INPUT_OBJECT")
-        schema.types[typename].fields.append(field)
+        # Replace rather than duplicate a field already loaded from the input schema.
+        fields = schema.types[typename].fields
+        fields[:] = [f for f in fields if f.name != field.name]
+        fields.append(field)
         schema.add_type(field.type.name, "OBJECT")
 
     return repr(schema)
