@@ -82,14 +82,16 @@ def extend_wordlist(wordlist: List[str], schema: graphql.Schema) -> None:
         log().info(f"Added {len(new)} names found in the schema to the wordlist")
 
 
-def next_document(schema: graphql.Schema, ignored: Set[str]) -> str:
+def next_document(
+    schema: graphql.Schema, ignored: Set[str], revisit: bool = False
+) -> str:
     """Return the document that probes the next type without fields, or "" when none is left.
 
-    Every returned type is added to ignored so one run probes it once.
+    With revisit, types that already have fields are probed too. Every returned type is added to ignored so one run probes it once.
     """
 
     while True:
-        _next = schema.get_type_without_fields(ignored)
+        _next = schema.get_type_without_fields(ignored, revisit)
         if not _next:
             return ""
         ignored.add(_next)
@@ -113,6 +115,7 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
     backoff: Optional[int] = None,
     disable_ssl_verify: Optional[bool] = None,
     bucket_size: Optional[int] = None,
+    revisit: bool = False,
 ) -> str:
     wordlist = wordlist or load_default_wordlist()
     assert wordlist, "No wordlist provided"
@@ -144,7 +147,9 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
     if not input_document:
         if input_schema:
             # Resume: types that already have fields are done.
-            input_document = next_document(graphql.Schema(schema=input_schema), ignored)
+            input_document = next_document(
+                graphql.Schema(schema=input_schema), ignored, revisit
+            )
             logger.info(f"Resuming with {input_document or 'nothing left to probe'}")
         else:
             input_document = "query { FUZZ }"
@@ -166,7 +171,7 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
         input_schema = json.loads(schema)
         s = graphql.Schema(schema=input_schema)
         extend_wordlist(wordlist, s)
-        input_document = next_document(s, ignored)
+        input_document = next_document(s, ignored, revisit)
 
     logger.info("Blind introspection complete.")
     await client().close()
@@ -217,5 +222,6 @@ def cli(argv: Optional[List[str]] = None) -> None:
             backoff=args.backoff,
             disable_ssl_verify=args.no_ssl,
             bucket_size=args.bucket_size,
+            revisit=args.revisit,
         )
     )

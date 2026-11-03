@@ -146,12 +146,17 @@ class Schema:
     def get_type_without_fields(
         self,
         ignored: Optional[Set[str]] = None,
+        revisit: bool = False,
     ) -> str:
-        """Gets the type without a field."""
+        """Gets the type without a field, or with revisit any type that can be probed."""
         ignored = ignored or set()
 
         for t in self.types.values():
-            if not t.fields and t.name not in ignored and t.kind not in UNPROBED_KINDS:
+            if (
+                (revisit or not t.fields)
+                and t.name not in ignored
+                and t.kind not in UNPROBED_KINDS
+            ):
                 return t.name
 
         return ""

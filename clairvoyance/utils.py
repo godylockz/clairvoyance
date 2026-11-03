@@ -136,6 +136,11 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         + " but if the server as some rate limit you may want to use slow mod.",
     )
     parser.add_argument(
+        "--revisit",
+        action="store_true",
+        help="With -i, probe every type again, including those that already have fields, and keep what was found. Use it to apply a new wordlist.",
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help="Enable progress bar",
@@ -145,6 +150,8 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     parsed_args = parser.parse_args(args)
     if parsed_args.bucket_size is not None and parsed_args.bucket_size < 1:
         parser.error("--bucket-size must be at least 1")
+    if parsed_args.revisit and not parsed_args.input_schema:
+        parser.error("--revisit needs an input schema (-i)")
     if parsed_args.profile == "slow":
         set_slow_config(parsed_args)
 

@@ -64,7 +64,7 @@ class TestResume(aiounittest.AsyncTestCase):
         self.tmp.cleanup()
 
     async def run_resume(
-        self, schema: graphql.Schema, wordlist: List[str]
+        self, schema: graphql.Schema, wordlist: List[str], revisit: bool = False
     ) -> NoFieldsClient:
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(repr(schema))
@@ -77,6 +77,7 @@ class TestResume(aiounittest.AsyncTestCase):
                 wordlist=wordlist,
                 input_schema_path=self.path,
                 output_path=self.path,
+                revisit=revisit,
             )
         return fake
 
@@ -107,6 +108,23 @@ class TestResume(aiounittest.AsyncTestCase):
         self.assertTrue(
             {"shippingAddress", "shipping", "address", "foo"} <= words, words
         )
+
+    async def test_revisit_probes_types_with_fields(self) -> None:
+        schema = build_schema(["name"])
+        schema.types["Cart"].fields.append(
+            graphql.Field("id", graphql.TypeRef("ID", "SCALAR"))
+        )
+
+        fake = await self.run_resume(schema, ["foo"], revisit=True)
+
+        self.assertTrue(any("cart {" not in r for r in fake.requests), fake.requests)
+        self.assertTrue(any("cart {" in r for r in fake.requests), fake.requests)
+        with open(self.path, "r", encoding="utf-8") as f:
+            types = graphql.Schema(schema=json.load(f)).types
+        self.assertEqual(
+            sorted(f.name for f in types["Query"].fields), ["cart", "name"]
+        )
+        self.assertEqual([f.name for f in types["Cart"].fields], ["id"])
 
 
 class TestDiscoveredWords(unittest.TestCase):
@@ -182,6 +200,13 @@ class TestReprobeDoesNotDuplicate(aiounittest.AsyncTestCase):
 class TestDocumentArg(unittest.TestCase):
     def test_document_defaults_to_none(self) -> None:
         self.assertIsNone(parse_args(["http://localhost"]).document)
+
+    def test_revisit_needs_input_schema(self) -> None:
+        with self.assertRaises(SystemExit):
+            parse_args(["--revisit", "http://localhost"])
+        self.assertTrue(
+            parse_args(["--revisit", "-i", "s.json", "http://localhost"]).revisit
+        )
 
 
 if __name__ == "__main__":
