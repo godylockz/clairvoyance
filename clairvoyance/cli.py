@@ -23,10 +23,11 @@ def setup_context(
     max_retries: Optional[int] = None,
     backoff: Optional[int] = None,
     disable_ssl_verify: Optional[bool] = None,
+    bucket_size: Optional[int] = None,
 ) -> None:
     """Initialize objects and freeze them into the context."""
 
-    Config()
+    Config(bucket_size=bucket_size)
     Client(
         url,
         headers=headers,
@@ -58,6 +59,7 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
     max_retries: Optional[int] = None,
     backoff: Optional[int] = None,
     disable_ssl_verify: Optional[bool] = None,
+    bucket_size: Optional[int] = None,
 ) -> str:
     wordlist = wordlist or load_default_wordlist()
     assert wordlist, "No wordlist provided"
@@ -71,6 +73,7 @@ async def blind_introspection(  # pylint: disable=too-many-arguments
         max_retries=max_retries,
         backoff=backoff,
         disable_ssl_verify=disable_ssl_verify,
+        bucket_size=bucket_size,
     )
 
     logger.info(f"Starting blind introspection on {url}...")
@@ -155,5 +158,6 @@ def cli(argv: Optional[List[str]] = None) -> None:
             max_retries=args.max_retries,
             backoff=args.backoff,
             disable_ssl_verify=args.no_ssl,
+            bucket_size=args.bucket_size,
         )
     )

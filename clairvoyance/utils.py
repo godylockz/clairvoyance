@@ -124,6 +124,12 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         help="Exponential backoff factor. Delay will be calculated as: `0.5 * backoff**retries` seconds.",
     )
     parser.add_argument(
+        "--bucket-size",
+        metavar="<int>",
+        type=int,
+        help="Number of words sent per request (default 64). Lower it if the server caps validation errors per response.",
+    )
+    parser.add_argument(
         "-p",
         "--profile",
         choices=["slow", "fast"],
@@ -139,6 +145,8 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     parser.add_argument("url")
 
     parsed_args = parser.parse_args(args)
+    if parsed_args.bucket_size is not None and parsed_args.bucket_size < 1:
+        parser.error("--bucket-size must be at least 1")
     if parsed_args.profile == "slow":
         set_slow_config(parsed_args)
 

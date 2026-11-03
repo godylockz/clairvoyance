@@ -104,6 +104,33 @@ TYPEREF_REGEXES = {k: [re.compile(r) for r in v] for k, v in _TYPEREF_REGEXES.it
 WRONG_TYPENAME = [re.compile(r) for r in _WRONG_TYPENAME]
 GENERAL_SKIP = [re.compile(r) for r in _GENERAL_SKIP]
 
+# graphql-js stops validating after 100 errors and appends this message, so
+# words past the limit get no error and would be mistaken for valid ones.
+ERROR_LIMIT_REGEX = re.compile(r"Too many validation errors", re.IGNORECASE)
+_error_limit_warned = False  # pylint: disable=invalid-name
+
+
+def hit_error_limit(errors: List[Dict[str, Any]], bucket_len: int) -> bool:
+    """Check whether the server truncated its errors, warning once per run.
+
+    A single-word bucket cannot be split further, so it never counts as truncated.
+    """
+
+    global _error_limit_warned  # pylint: disable=global-statement
+
+    if bucket_len < 2 or not any(
+        ERROR_LIMIT_REGEX.search(e.get("message", "")) for e in errors
+    ):
+        return False
+
+    if not _error_limit_warned:
+        _error_limit_warned = True
+        log().warning(
+            f"Server capped validation errors for a {bucket_len}-word bucket, splitting buckets in half. "
+            "Lower --bucket-size to save requests."
+        )
+    return True
+
 
 # pylint: disable=too-many-branches
 def get_valid_fields(error_message: str) -> Set[str]:
@@ -166,8 +193,7 @@ async def probe_valid_fields(
         A set of discovered valid fields.
     """
 
-    async def __probation(i: int) -> Set[str]:
-        bucket = wordlist[i : i + config().bucket_size]
+    async def __probation(bucket: List[str]) -> Set[str]:
         valid_fields = set(bucket)
         document = input_document.replace("FUZZ", " ".join(bucket))
 
@@ -175,11 +201,22 @@ async def probe_valid_fields(
         response = await client().post(document)
         total_time = time.time() - start_time
 
-        errors = response["errors"]
+        # The request failed after all retries; the client already logged it.
+        if not response:
+            return set()
+
+        errors = response.get("errors", [])
 
         log().debug(
             f"Sent {len(bucket)} fields, received {len(errors)} errors in {round(total_time, 2)} seconds"
         )
+
+        if hit_error_limit(errors, len(bucket)):
+            half = len(bucket) // 2
+            halves = await asyncio.gather(
+                __probation(bucket[:half]), __probation(bucket[half:])
+            )
+            return halves[0] | halves[1]
 
         for error in errors:
             error_message = error["message"]
@@ -207,7 +244,8 @@ async def probe_valid_fields(
     # Create task list
     tasks: List[asyncio.Task] = []
     for i in range(0, len(wordlist), config().bucket_size):
-        tasks.append(asyncio.create_task(__probation(i)))
+        bucket = wordlist[i : i + config().bucket_size]
+        tasks.append(asyncio.create_task(__probation(bucket)))
 
     # Process results
     valid_fields = set()
@@ -237,10 +275,22 @@ async def probe_valid_args(
 
     response = await client().post(document=document)
 
+    # The request failed after all retries; the client already logged it.
+    if not response:
+        return set()
+
     if "errors" not in response:
         return valid_args
 
     errors = response["errors"]
+    if hit_error_limit(errors, len(wordlist)):
+        half = len(wordlist) // 2
+        halves = await asyncio.gather(
+            probe_valid_args(field, wordlist[:half], input_document),
+            probe_valid_args(field, wordlist[half:], input_document),
+        )
+        return halves[0] | halves[1]
+
     for error in errors:
         error_message = error["message"]
 
