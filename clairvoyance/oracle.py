@@ -110,6 +110,15 @@ ERROR_LIMIT_REGEX = re.compile(r"Too many validation errors", re.IGNORECASE)
 _error_limit_warned = False  # pylint: disable=invalid-name
 
 
+def has_no_subfields(error_message: str) -> bool:
+    """Check whether the error says the probed type is a scalar or enum."""
+
+    return (
+        "must not have a selection since type" in error_message
+        and "has no subfields" in error_message
+    ) or "must not have a sub selection" in error_message
+
+
 def hit_error_limit(errors: List[Dict[str, Any]], bucket_len: int) -> bool:
     """Check whether the server truncated its errors, warning once per run.
 
@@ -193,7 +202,8 @@ async def probe_valid_fields(
         A set of discovered valid fields.
     """
 
-    async def __probation(bucket: List[str]) -> Set[str]:
+    # None means the type has no subfields, so the rest of the wordlist is pointless.
+    async def __probation(bucket: List[str]) -> Optional[Set[str]]:
         valid_fields = set(bucket)
         document = input_document.replace("FUZZ", " ".join(bucket))
 
@@ -213,19 +223,18 @@ async def probe_valid_fields(
 
         if hit_error_limit(errors, len(bucket)):
             half = len(bucket) // 2
-            halves = await asyncio.gather(
+            first, second = await asyncio.gather(
                 __probation(bucket[:half]), __probation(bucket[half:])
             )
-            return halves[0] | halves[1]
+            if first is None or second is None:
+                return None
+            return first | second
 
         for error in errors:
             error_message = error["message"]
 
-            if (
-                "must not have a selection since type" in error_message
-                and "has no subfields" in error_message
-            ) or "must not have a sub selection" in error_message:
-                return set()
+            if has_no_subfields(error_message):
+                return None
 
             # ! LEGACY CODE please keep
             # First remove field if it produced an 'Cannot query field' error
@@ -241,21 +250,26 @@ async def probe_valid_fields(
 
         return valid_fields
 
-    # Create task list
-    tasks: List[asyncio.Task] = []
-    for i in range(0, len(wordlist), config().bucket_size):
-        bucket = wordlist[i : i + config().bucket_size]
-        tasks.append(asyncio.create_task(__probation(bucket)))
+    size = config().bucket_size
+    buckets = [wordlist[i : i + size] for i in range(0, len(wordlist), size)]
+    if not buckets:
+        return set()
 
-    # Process results
-    valid_fields = set()
+    # Send one bucket first so a scalar or enum type costs one request, not the whole wordlist.
+    first = await __probation(buckets[0])
+    if first is None:
+        log().debug("Type has no subfields, skipping the rest of the wordlist")
+        return set()
+
+    tasks = [asyncio.create_task(__probation(b)) for b in buckets[1:]]
+    valid_fields = set(first)
     for task in track(
         asyncio.as_completed(tasks),
         description=f"Sending {len(tasks)} fields",
         total=len(tasks),
     ):
         result = await task
-        valid_fields.update(result)
+        valid_fields.update(result or set())
 
     return valid_fields
 
@@ -294,10 +308,7 @@ async def probe_valid_args(
     for error in errors:
         error_message = error["message"]
 
-        if (
-            "must not have a selection since type" in error_message
-            and "has no subfields" in error_message
-        ) or "must not have a sub selection" in error_message:
+        if has_no_subfields(error_message):
             return set()
 
         # First remove arg if it produced an 'Unknown argument' error
@@ -427,7 +438,10 @@ def get_typeref(
 
         name = tk.replace("!", "").replace("[", "").replace("]", "")
         kind = ""
-        if name in GraphQLPrimitive:
+        if name in GraphQLPrimitive or (
+            context == FuzzingContext.FIELD and has_no_subfields(error_message)
+        ):
+            # Custom scalars and enums both report "no subfields"; record them as scalars.
             kind = "SCALAR"
         elif context == FuzzingContext.FIELD:
             kind = "OBJECT"
@@ -682,6 +696,6 @@ async def clairvoyance(
         fields = schema.types[typename].fields
         fields[:] = [f for f in fields if f.name != field.name]
         fields.append(field)
-        schema.add_type(field.type.name, "OBJECT")
+        schema.add_type(field.type.name, field.type.kind)
 
     return repr(schema)

@@ -5,10 +5,11 @@ from typing import Any, Dict, List, Optional, Set
 
 import aiounittest
 
-from clairvoyance import oracle
+from clairvoyance import graphql, oracle
 from clairvoyance.config import Config
 from clairvoyance.entities.context import client_ctx, logger_ctx
 from clairvoyance.entities.interfaces import IClient
+from clairvoyance.entities.oracle import FuzzingContext
 from clairvoyance.utils import parse_args
 
 ERROR_LIMIT = 100
@@ -93,6 +94,61 @@ class TestErrorLimit(aiounittest.AsyncTestCase):
 
         self.assertEqual(fields, set())
         self.assertEqual(args, set())
+
+
+class NoSubfieldsClient(IClient):
+    """Answers like a server probing inside a custom scalar."""
+
+    def __init__(self) -> None:
+        self.requests: List[str] = []
+        client_ctx.set(self)
+
+    async def post(self, document: Optional[str], retries: int = 0) -> Dict[str, Any]:
+        assert document
+        self.requests.append(document)
+        return {
+            "errors": [
+                {
+                    "message": 'Field "price" must not have a selection since type "Money" has no subfields.'
+                }
+            ]
+        }
+
+    async def close(self) -> None:
+        pass
+
+
+class TestScalarTypes(aiounittest.AsyncTestCase):
+    def setUp(self) -> None:
+        logger_ctx.set(logging.getLogger("clairvoyance"))
+
+    async def test_scalar_type_costs_one_request(self) -> None:
+        Config(bucket_size=64)
+        fake = NoSubfieldsClient()
+
+        fields = await oracle.probe_valid_fields(JUNK, "query { price { FUZZ } }")
+
+        self.assertEqual(fields, set())
+        self.assertEqual(len(fake.requests), 1)
+
+    def test_custom_scalar_kind(self) -> None:
+        got = oracle.get_typeref(
+            'Field "price" must not have a selection since type "Money!" has no subfields.',
+            FuzzingContext.FIELD,
+        )
+        self.assertEqual(
+            got, graphql.TypeRef(name="Money", kind="SCALAR", non_null=True)
+        )
+
+    def test_scalar_types_are_not_probed(self) -> None:
+        schema = graphql.Schema(query_type="Query")
+        schema.types["Query"].fields.append(
+            graphql.Field("price", graphql.TypeRef("Money", "SCALAR"))
+        )
+        schema.add_type("Money", "SCALAR")
+        schema.add_type("Color", "ENUM")
+
+        self.assertEqual(schema.get_type_without_fields({"String", "ID"}), "")
 
 
 class TestBucketSizeArg(unittest.TestCase):

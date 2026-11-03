@@ -5,6 +5,9 @@ from clairvoyance.entities import GraphQLPrimitive
 from clairvoyance.entities.context import log
 from clairvoyance.entities.primitives import GraphQLKind
 
+# Input objects need a different probe; scalars and enums have no fields.
+UNPROBED_KINDS = (GraphQLKind.INPUT_OBJECT, GraphQLKind.SCALAR, GraphQLKind.ENUM)
+
 
 class Schema:
     """Host of the introspection data."""
@@ -148,11 +151,7 @@ class Schema:
         ignored = ignored or set()
 
         for t in self.types.values():
-            if (
-                not t.fields
-                and t.name not in ignored
-                and t.kind != GraphQLKind.INPUT_OBJECT
-            ):
+            if not t.fields and t.name not in ignored and t.kind not in UNPROBED_KINDS:
                 return t.name
 
         return ""
